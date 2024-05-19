@@ -1,60 +1,47 @@
 import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
-import re
-from selenium.webdriver.chrome.service import Service
+
+from selenium.webdriver import Chrome, ChromeOptions
+from selenium.common.exceptions import TimeoutException, WebDriverException
 import logging
-from chromeDriverManager.chromedriver_manager import ChromeDriverManager
+from bs4 import BeautifulSoup
+
+logging.basicConfig(filename='investing_news_extractor.log', level=logging.INFO,
+                    format='%(asctime)s:%(levelname)s:%(message)s')
 
 
 class InvestingNewsExtractor:
-    base_url: str = "https://www.investing.com"
-    news_pages_url: str = "https://www.investing.com/currencies/{symbol}-news/{page_number}"  # symbol like gbp-usd
+    _base_url: str = "https://www.investing.com"
 
     def __init__(self):
-        self.driver = None
-        self.log = logging.getLogger("selenium.webdriver.remote.remote_connection")
-        self.log.setLevel(logging.ERROR)  # Set the logger's level to ERROR
+        self._driver: Chrome = None
+        self._news_url = "https://www.investing.com/currencies/{symbol}-news/{page_number}/"
 
-    def setup_chrome(self):
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--ignore-ssl-errors=yes')
-        chrome_options.add_argument("--ignore-certificate-errors")
-        chrome_options.add_argument('--log-level=2')
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36"
-        chrome_options.add_argument(f'user-agent={user_agent}')
+    def _setup_chrome(self):
+        option = ChromeOptions()
+        option.add_argument("--headless")
+        self._driver = Chrome(options=option)
 
-        # Configure desired capabilities to suppress SSL errors
-        chrome_service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-
-    def quit_chrome(self):
-        self.driver.quit()
-
-    def get_site_html_content(self, url) -> str:
+    def _get_site_html_content(self, url) -> str:
         try:
-            self.setup_chrome()
-            self.driver.get(url)
-
-            html_content = self.driver.page_source
-
+            self._driver.get(url)
+            return self._driver.page_source
+        except TimeoutException:
+            logging.error("Timeout while trying to load the page: %s", url)
+            return "Error: Timeout while trying to load the page."
+        except WebDriverException as e:
+            logging.error("WebDriver exception occurred: %s", str(e))
+            return f"Error: WebDriver exception occurred: {str(e)}"
         except Exception as e:
-            print(f"An error occurred: {e}")
-            html_content = None
-        finally:
-            if 'driver' in locals():
-                self.driver.quit()
+            logging.error("An unexpected error occurred: %s", str(e))
+            return f"Error: An unexpected error occurred: {str(e)}"
 
-        return html_content
+    def _extract_link_from_html(self, html_content: str):
+        """
+            this function get a html page and extract all the news link
+            :param html_content: html content of the news lists page
+            :return: a list of news links
+        """
 
-    def extract_links_from_html(self, html_content: str) -> list:
-        """
-        this function get a html page and extract all the news link
-        :param html_content: html content of the news lists page
-        :return: a list of news links
-        """
         try:
             soup = BeautifulSoup(html_content, "html.parser")
 
@@ -71,12 +58,13 @@ class InvestingNewsExtractor:
                 # Save the extracted data
                 if url and timestamp:
                     news_data.append({'url': url, 'timestamp': timestamp})
+
             return news_data
         except Exception as e:
-            print(f"An error occurred while extracting links from HTML: {e}")
-            return []  # Return an empty list in case of an error
+            logging.error("An unexpected error occurred: %s", str(e))
+            return f"Error: An unexpected error occurred: {str(e)}"
 
-    def get_news_links(self, symbol: str, page_count: int) -> list:
+    def _get_news_links(self, symbol: str, page_count: int) -> list:
         """
         Retrieves a list of news article links and their publication timestamps for a given currency pair symbol over a specified number of pages.
 
@@ -102,19 +90,19 @@ class InvestingNewsExtractor:
 
         for i in range(1, page_count + 1):
             try:
-                html_content = self.get_site_html_content(self.news_pages_url.format(symbol=symbol, page_number=i))
-                news_links = self.extract_links_from_html(html_content)
+                html_content = self._get_site_html_content(self._news_url.format(symbol=symbol, page_number=i))
+                news_links = self._extract_link_from_html(html_content)
 
                 for news_link in news_links:
                     links.append(news_link)
-                    print(news_link)
 
             except Exception as e:
                 print(f"An error occurred while scraping page {i}: {e}")
+                logging.error(f"an error occurred while scraping page {i}: {e}")
 
         return links
 
-    def extract_content_from_news_link(self, url: str) -> dict:
+    def _extract_content_from_news_link(self, url: str) -> dict:
         """
         Extracts and returns the content from a news link provided by its URL.
 
@@ -123,7 +111,7 @@ class InvestingNewsExtractor:
         """
         try:
             # Fetch the HTML content of the provided URL.
-            html_content = self.get_site_html_content(self.base_url + url)
+            html_content = self._get_site_html_content(self._base_url + url)
 
             # Create a BeautifulSoup object to parse the HTML.
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -149,25 +137,29 @@ class InvestingNewsExtractor:
             else:
                 return None
         except Exception as e:
-            self.log.logger(e)
+            logging.error(f"{e}")
+            print(f'an unexpected error occurred: {e}')
 
-    def get_all_news_content(self, links: list, symbol: str) -> list:
+    def _get_all_news_content(self, links: list, symbol: str) -> list:
         news_information = []
         for i in links:
-            news_content = self.extract_content_from_news_link(i['url'])
+            news_content = self._extract_content_from_news_link(i['url'])
 
-            print(news_content)
             news_timestamp = datetime.datetime.strptime(i['timestamp'], "%Y-%m-%d %H:%M:%S").timestamp()
             news_timestamp = int(news_timestamp * 1000)
 
             news_information.append(
-                {"symbol":symbol ,"content": news_content["content"], "url": i['url'], "title": news_content["title"],
+                {"symbol": symbol, "content": news_content["content"], "url": i['url'], "title": news_content["title"],
                  "timestamp": news_timestamp})
 
         return news_information
 
+    def _quit(self):
+        self._driver.quit()
+
     def main(self, symbol: str, page_count: int = 1) -> list:
-        links = self.get_news_links(symbol, page_count)
-        data = self.get_all_news_content(links, symbol)
-        self.quit_chrome()
+        self._setup_chrome()
+        links = self._get_news_links(symbol, page_count)
+        data = self._get_all_news_content(links, symbol)
+        self._quit()
         return data
